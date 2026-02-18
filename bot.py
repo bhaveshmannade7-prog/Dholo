@@ -11,8 +11,8 @@ from telegram.ext import (
     filters,
 )
 
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-
+import os
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 # ---------------------------
 # Start Command
 # ---------------------------
