@@ -1,9 +1,10 @@
 import os
 import re
 import yt_dlp
+from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
@@ -11,35 +12,34 @@ from telegram.ext import (
     filters,
 )
 
-import os
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not found in environment variables")
-# ---------------------------
-# Start Command
-# ---------------------------
+if not BOT_TOKEN or not WEBHOOK_URL:
+    raise ValueError("Missing BOT_TOKEN or WEBHOOK_URL")
+
+app = FastAPI()
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+
+# ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Send me a YouTube link.\nI will ask you to choose quality."
+        "👋 Send YouTube link.\nSelect quality after that."
     )
 
-# ---------------------------
-# URL Validation
-# ---------------------------
-def is_youtube_url(url):
-    pattern = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/"
-    return re.match(pattern, url)
 
-# ---------------------------
-# Receive Link
-# ---------------------------
+# ---------------- URL VALIDATION ----------------
+def is_youtube_url(url):
+    return re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/", url)
+
+
+# ---------------- HANDLE LINK ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
 
     if not is_youtube_url(url):
-        await update.message.reply_text("❌ Please send a valid YouTube link.")
+        await update.message.reply_text("❌ Invalid YouTube link.")
         return
 
     context.user_data["url"] = url
@@ -55,16 +55,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
     ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
-        "🎥 Select video quality:",
-        reply_markup=reply_markup,
+        "🎥 Choose quality:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-# ---------------------------
-# Download Function
-# ---------------------------
+
+# ---------------- DOWNLOAD ----------------
 async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -72,11 +69,7 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quality = query.data
     url = context.user_data.get("url")
 
-    if not url:
-        await query.message.reply_text("Session expired. Send link again.")
-        return
-
-    await query.message.reply_text("⬇ Downloading... Please wait.")
+    await query.message.reply_text("⬇ Downloading...")
 
     ydl_opts = {
         "format": f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]",
@@ -90,34 +83,44 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
-        # Telegram limit safety (50MB normal bots)
         if os.path.getsize(filename) > 49 * 1024 * 1024:
-            await query.message.reply_text(
-                "⚠ File too large for Telegram (50MB limit). Try lower quality."
-            )
+            await query.message.reply_text("⚠ File too large (50MB limit).")
             os.remove(filename)
             return
 
         await query.message.reply_video(video=open(filename, "rb"))
-
         os.remove(filename)
 
     except Exception as e:
-        await query.message.reply_text("❌ Error occurred.")
+        await query.message.reply_text("❌ Download failed.")
         print(e)
 
-# ---------------------------
-# Main
-# ---------------------------
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(download_video))
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+telegram_app.add_handler(CallbackQueryHandler(download_video))
 
-    print("Bot running...")
-    app.run_polling()
 
+# ---------------- WEBHOOK ROUTE ----------------
+@app.post("/")
+async def webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return {"status": "ok"}
+
+
+# ---------------- STARTUP ----------------
+@app.on_event("startup")
+async def on_startup():
+    await telegram_app.initialize()
+    await telegram_app.bot.set_webhook(WEBHOOK_URL)
+    print("Webhook set successfully.")
+
+
+# ---------------- RUN ----------------
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
