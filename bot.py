@@ -1,177 +1,94 @@
 import os
-import re
 import asyncio
-import shutil
-import yt_dlp
-from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
+import yt_dlp
+from dotenv import load_dotenv
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# Load environment variables
+load_dotenv()
 
-if not BOT_TOKEN or not WEBHOOK_URL:
-    raise ValueError("Missing BOT_TOKEN or WEBHOOK_URL")
+TOKEN = os.getenv('BOT_TOKEN')
+# Render par ham cookie file ka content text format me dalenge
+COOKIE_DATA = os.getenv('COOKIE_CONTENT') 
 
-app = FastAPI()
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+# Cookie file create karna agar content available ho
+if COOKIE_DATA:
+    with open('cookies.txt', 'w') as f:
+        f.write(COOKIE_DATA)
 
-# ---------------- URL CHECK ----------------
-def is_youtube_url(url):
-    return re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/", url)
+# Download directory
+if not os.path.exists('downloads'):
+    os.makedirs('downloads')
 
-# ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Send YouTube link.\nYou can download Video or Audio."
-    )
+    await update.message.reply_text("👋 Hello! YouTube link bhejo, main cookies ka use karke download kar dunga.")
 
-# ---------------- HANDLE LINK ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
-
-    if not is_youtube_url(url):
-        await update.message.reply_text("❌ Invalid YouTube link.")
-        return
-
-    context.user_data["url"] = url
-
-    keyboard = [
-        [InlineKeyboardButton("🎥 Video", callback_data="video")],
-        [InlineKeyboardButton("🎵 Audio (MP3)", callback_data="audio")]
-    ]
-
-    await update.message.reply_text(
-        "Choose download type:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-# ---------------- QUALITY MENU ----------------
-async def choose_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    context.user_data["type"] = query.data
-
-    if query.data == "video":
+    if "youtube.com" in url or "youtu.be" in url:
         keyboard = [
             [
-                InlineKeyboardButton("360p", callback_data="360"),
-                InlineKeyboardButton("480p", callback_data="480"),
+                InlineKeyboardButton("🎬 Video (1080p/Best)", callback_data=f"vid_best|{url}"),
+                InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"aud_mp3|{url}")
             ],
-            [
-                InlineKeyboardButton("720p", callback_data="720"),
-                InlineKeyboardButton("1080p", callback_data="1080"),
-            ],
+            [InlineKeyboardButton("🎞️ 720p Quality", callback_data=f"vid_720|{url}")]
         ]
-        await query.message.reply_text(
-            "🎥 Select quality:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Select Quality:", reply_markup=reply_markup)
     else:
-        await download_audio(update, context)
+        await update.message.reply_text("Bhai, valid YouTube link bhejo!")
 
-# ---------------- VIDEO DOWNLOAD ----------------
-async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    quality = query.data
-    url = context.user_data.get("url")
-
-    await query.message.reply_text("⬇ Downloading video...")
+    
+    data, url = query.data.split('|')
+    status_msg = await query.edit_message_text("⏳ Processing... Downloading file.")
 
     ydl_opts = {
-        "format": f"best[height<={quality}]",
-        "outtmpl": "video.%(ext)s",
-        "quiet": False,
-        "noplaylist": True,
+        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+        'outtmpl': 'downloads/%(title)s.%(ext)s',
+        'noplaylist': True,
+        'quiet': True,
     }
+
+    if data == "vid_best":
+        ydl_opts['format'] = 'bestvideo+bestaudio/best'
+    elif data == "vid_720":
+        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best'
+    elif data == "aud_mp3":
+        ydl_opts['format'] = 'bestaudio/best'
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+            file_path = ydl.prepare_filename(info)
+            if data == "aud_mp3":
+                file_path = os.path.splitext(file_path)[0] + ".mp3"
 
-        if os.path.getsize(filename) > 49 * 1024 * 1024:
-            await query.message.reply_text("⚠ File too large (50MB limit).")
-            os.remove(filename)
-            return
-
-        await query.message.reply_video(video=open(filename, "rb"))
-        os.remove(filename)
-
+        await status_msg.edit_text("📤 Uploading to Telegram...")
+        with open(file_path, 'rb') as f:
+            if data == "aud_mp3":
+                await context.bot.send_audio(chat_id=query.message.chat_id, audio=f, caption=info['title'])
+            else:
+                await context.bot.send_video(chat_id=query.message.chat_id, video=f, supports_streaming=True, caption=info['title'])
+        
+        os.remove(file_path)
     except Exception as e:
-        await query.message.reply_text(f"❌ Video Error:\n{str(e)}")
+        await query.message.reply_text(f"❌ Error: {str(e)}")
 
-# ---------------- AUDIO DOWNLOAD ----------------
-async def download_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query:
-        await query.answer()
-        msg = query.message
-    else:
-        msg = update.message
+def main():
+    if not TOKEN:
+        print("Error: BOT_TOKEN nahi mila!")
+        return
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(button_click))
+    print("Bot is alive...")
+    app.run_polling()
 
-    url = context.user_data.get("url")
-
-    await msg.reply_text("⬇ Downloading audio...")
-
-    ydl_opts = {
-        "format": "bestaudio",
-        "outtmpl": "audio.%(ext)s",
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }],
-        "quiet": False,
-        "noplaylist": True,
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(url, download=True)
-
-        if os.path.exists("audio.mp3"):
-            await msg.reply_audio(audio=open("audio.mp3", "rb"))
-            os.remove("audio.mp3")
-        else:
-            await msg.reply_text("❌ Audio conversion failed.")
-
-    except Exception as e:
-        await msg.reply_text(f"❌ Audio Error:\n{str(e)}")
-
-# ---------------- ROUTE ----------------
-@app.post("/")
-async def webhook(req: Request):
-    data = await req.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return {"ok": True}
-
-# ---------------- STARTUP ----------------
-@app.on_event("startup")
-async def on_startup():
-    await telegram_app.initialize()
-    await telegram_app.bot.set_webhook(WEBHOOK_URL)
-    print("Webhook set.")
-
-# ---------------- HANDLERS ----------------
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-telegram_app.add_handler(CallbackQueryHandler(choose_quality, pattern="^(video|audio)$"))
-telegram_app.add_handler(CallbackQueryHandler(download_video, pattern="^(360|480|720|1080)$"))
-
-# ---------------- RUN ----------------
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    main()
