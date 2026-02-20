@@ -17,25 +17,18 @@ PORT = int(os.getenv('PORT', 10000))
 COOKIE_DATA = os.getenv('COOKIE_DATA')
 COOKIE_FILE = 'cookies.txt'
 
-# Cookie setup from Env
+# Env se cookie file banana
 if COOKIE_DATA:
     with open(COOKIE_FILE, 'w') as f:
         f.write(COOKIE_DATA)
 
-# Initialize Application
-ptb_app = Application.builder().token(TOKEN).build()
+# Flask aur Telegram Application initialize karna
 app = Flask(__name__)
+ptb_app = Application.builder().token(TOKEN).build()
 
-# --- DOWNLOAD PROGRESS HANDLER ---
-def progress_hook(d, status_msg, loop, context, chat_id):
-    if d['status'] == 'downloading':
-        p = d.get('_percent_str', '0%')
-        # Har 2 second me update karne ki koshish (Rate limit se bachne ke liye)
-        logger.info(f"Downloading: {p}")
-
-# --- HANDLERS ---
+# --- BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **THE GREAT MOVIES Downloader**\n\nLink bhejein aur quality chunien!", parse_mode='Markdown')
+    await update.message.reply_text("🚀 **THE GREAT MOVIES Downloader**\n\nYouTube link bhejein download karne ke liye!", parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
@@ -54,7 +47,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data, url = query.data.split('|')
     
-    status_msg = await query.message.reply_text("⏳ **Processing link...**", parse_mode='Markdown')
+    status_msg = await query.message.reply_text("⏳ **Link process ho raha hai...**", parse_mode='Markdown')
 
     ydl_opts = {
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
@@ -74,22 +67,22 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
 
     try:
-        await status_msg.edit_text("📥 **Downloading started...**", parse_mode='Markdown')
+        await status_msg.edit_text("📥 **Downloading...**", parse_mode='Markdown')
         
-        # Run yt-dlp in a thread to keep bot responsive
-        loop = asyncio.get_running_loop()
-        def download():
+        # Download function for executor
+        def run_dl():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(url, download=True)
         
-        info = await loop.run_in_executor(None, download)
+        # Current loop ko use karna bina variable error ke
+        current_loop = asyncio.get_running_loop()
+        info = await current_loop.run_in_executor(None, run_dl)
         file_path = info['requested_downloads'][0]['filepath']
         
-        # Audio fix
         if "aud_mp3" in data and not file_path.endswith('.mp3'):
             file_path = os.path.splitext(file_path)[0] + ".mp3"
 
-        await status_msg.edit_text("📤 **Uploading to Telegram...**", parse_mode='Markdown')
+        await status_msg.edit_text("📤 **Telegram par upload ho raha hai...**", parse_mode='Markdown')
         
         with open(file_path, 'rb') as f:
             if "aud_mp3" in data:
@@ -104,16 +97,17 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await status_msg.edit_text(f"❌ **Error:** `{str(e)}`", parse_mode='Markdown')
 
-# --- WEBHOOK ROUTES ---
+# --- WEBHOOK ENDPOINTS ---
 @app.route(f'/{TOKEN}', methods=['POST'])
 async def webhook():
-    update = Update.de_json(request.get_json(force=True), ptb_app.bot)
-    await ptb_app.process_update(update)
-    return 'ok', 200
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), ptb_app.bot)
+        await ptb_app.process_update(update)
+        return 'ok', 200
 
 @app.route('/')
 def index():
-    return 'Bot is Alive!', 200
+    return 'Bot is Online! 🚀', 200
 
 # --- MAIN RUNNER ---
 async def main():
@@ -122,24 +116,25 @@ async def main():
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     ptb_app.add_handler(CallbackQueryHandler(button_click))
 
-    # Initialize and Start
+    # Bot ko initialize aur start karna
     await ptb_app.initialize()
     await ptb_app.start()
     
-    # Set Webhook
-    await ptb_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    # Webhook set karna
+    webhook_url = f"{WEBHOOK_URL}/{TOKEN}"
+    await ptb_app.bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set to: {webhook_url}")
     
-    # Run Flask in the same loop
+    # Flask server ko async tarike se chalana
     from werkzeug.serving import make_server
     server = make_server('0.0.0.0', PORT, app)
     logger.info(f"Server starting on port {PORT}")
     
-    # This keeps the server running until the loop is closed
-    await loop.run_in_executor(None, server.serve_forever)
+    # Running server forever in the loop
+    await asyncio.to_thread(server.serve_forever)
 
 if __name__ == '__main__':
     try:
-        # Python 3.7+ approach
         asyncio.run(main())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
