@@ -28,14 +28,14 @@ os.makedirs('downloads', exist_ok=True)
 
 # --- BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **THE GREAT MOVIES Downloader**\n\nYouTube link bhejein aur download shuru karein!", parse_mode='Markdown')
+    await update.message.reply_text("🚀 **THE GREAT MOVIES Downloader**\n\nBhai link bhejo, is baar pakka download hoga!", parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     if "youtube.com" in url or "youtu.be" in url:
         keyboard = [
             [InlineKeyboardButton("🎬 Video (Best)", callback_data=f"vid_best|{url}")],
-            [InlineKeyboardButton("🎞️ 720p (Agar available ho)", callback_data=f"vid_720|{url}"),
+            [InlineKeyboardButton("🎞️ 720p", callback_data=f"vid_720|{url}"),
              InlineKeyboardButton("🎵 MP3 Audio", callback_data=f"aud_mp3|{url}")]
         ]
         await update.message.reply_text("📥 **Quality Select Karein:**", 
@@ -49,16 +49,22 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data, url = query.data.split('|')
     
-    status_msg = await query.message.reply_text("⏳ **Link process ho raha hai...**", parse_mode='Markdown')
+    status_msg = await query.message.reply_text("⏳ **YouTube ki security bypass kar raha hu...**", parse_mode='Markdown')
 
-    # ---> YAHAN HAI ASLI FIX (ANDROID BYPASS) <---
+    # ---> YAHAN HAI ASLI JADUI FIX <---
     ydl_opts = {
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         'outtmpl': 'downloads/%(title)s.%(ext)s',
         'quiet': False, 
         'no_warnings': True,
-        # YouTube ko lagega ki request Mobile ya Web Browser se aa rahi hai, server se nahi
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        # 1. Force IPv4 (Cloud IPv6 Block ko todne ke liye)
+        'source_address': '0.0.0.0',
+        # 2. Smart TV & Mobile Bypass
+        'extractor_args': {'youtube': {'player_client': ['tv', 'android', 'ios', 'web']}},
+        # 3. Fake User-Agent taaki bot na lage
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
     }
 
     # Bulletproof Formats
@@ -67,14 +73,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "vid_best" in data:
         ydl_opts['format'] = 'bestvideo+bestaudio/best'
     else:
-        # Agar sirf bestaudio fail ho jaye, toh best video dhoondh kar usme se MP3 nikalega
+        # Audio ke liye sabse best fallback
         ydl_opts.update({
-            'format': 'bestaudio/best', 
+            'format': 'm4a/bestaudio/best', 
             'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
         })
 
     try:
-        await status_msg.edit_text("📥 **Downloading start ho gayi hai... (Thoda wait karein)**", parse_mode='Markdown')
+        await status_msg.edit_text("📥 **Downloading start ho gayi hai...**", parse_mode='Markdown')
         
         def run_dl():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -88,7 +94,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 file_path = ydl.prepare_filename(info)
         
-        # Audio extraction ke baad .mp3 extension fix
+        # Extension fix for audio
         if "aud_mp3" in data and not file_path.endswith('.mp3'):
             file_path = os.path.splitext(file_path)[0] + ".mp3"
 
