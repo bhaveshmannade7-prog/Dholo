@@ -16,19 +16,14 @@ PORT = int(os.getenv('PORT', 10000))
 COOKIE_DATA = os.getenv('COOKIE_DATA')
 COOKIE_FILE = os.path.join(os.getcwd(), 'cookies.txt')
 
-# Env se cookie file banana (Render ka Newline Issue Fix kiya gaya hai)
+# Env se cookie file banana (Render newline fix ke sath)
 if COOKIE_DATA:
-    # Render string me '\n' ko literal text bana deta hai, isse fix karna zaroori hai
     cookie_text = COOKIE_DATA.replace('\\n', '\n').strip()
-    
     if not cookie_text.startswith("# Netscape HTTP Cookie File"):
         cookie_text = "# Netscape HTTP Cookie File\n" + cookie_text
-        
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
         f.write(cookie_text)
-    logger.info("Cookie file successfully create ho gayi hai.")
 
-# Download folder pehle se bana kar rakhein
 os.makedirs('downloads', exist_ok=True)
 
 # --- BOT HANDLERS ---
@@ -56,22 +51,25 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await query.message.reply_text("⏳ **Link process ho raha hai...**", parse_mode='Markdown')
 
+    # ---> YAHAN HAI ASLI FIX (ANDROID BYPASS) <---
     ydl_opts = {
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         'outtmpl': 'downloads/%(title)s.%(ext)s',
-        'quiet': False, # Logs dekhne ke liye True hata diya
+        'quiet': False, 
         'no_warnings': True,
+        # YouTube ko lagega ki request Mobile ya Web Browser se aa rahi hai, server se nahi
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
     }
 
-    # Sabse Powerful Fallback Format (Shorts + Normal videos sabke liye)
+    # Bulletproof Formats
     if "vid_720" in data:
-        # 720p video+audio, nahi mila toh 720p merged, nahi mila toh simple best
-        ydl_opts['format'] = 'bv*[height<=720]+ba/b[height<=720]/b'
+        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
     elif "vid_best" in data:
-        ydl_opts['format'] = 'bv*+ba/b'
+        ydl_opts['format'] = 'bestvideo+bestaudio/best'
     else:
+        # Agar sirf bestaudio fail ho jaye, toh best video dhoondh kar usme se MP3 nikalega
         ydl_opts.update({
-            'format': 'ba/b',
+            'format': 'bestaudio/best', 
             'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
         })
 
@@ -84,17 +82,16 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         info = await asyncio.to_thread(run_dl)
         
-        # File path properly nikalna
         if 'requested_downloads' in info:
             file_path = info['requested_downloads'][0]['filepath']
         else:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 file_path = ydl.prepare_filename(info)
         
+        # Audio extraction ke baad .mp3 extension fix
         if "aud_mp3" in data and not file_path.endswith('.mp3'):
             file_path = os.path.splitext(file_path)[0] + ".mp3"
 
-        # Telegram size limit check (50MB)
         if os.path.exists(file_path):
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             if file_size_mb > 50:
@@ -116,11 +113,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Download Error: {e}")
-        error_msg = str(e)
-        if "Sign in" in error_msg:
-            await status_msg.edit_text("❌ **Error:** YouTube Cookie kaam nahi kar raha ya IP Block hai. Nayi Cookie try karein.", parse_mode='Markdown')
-        else:
-            await status_msg.edit_text(f"❌ **Error:** `{error_msg}`", parse_mode='Markdown')
+        await status_msg.edit_text(f"❌ **Error:** `{str(e)}`", parse_mode='Markdown')
 
 # --- MAIN RUNNER ---
 def main():
