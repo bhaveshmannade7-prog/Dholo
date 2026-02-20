@@ -5,18 +5,19 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 import yt_dlp
 
-# Logging setup
+# --- LOGGING ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURATION ---
+# --- SMART CONFIGURATION ---
 TOKEN = os.getenv('BOT_TOKEN')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', '').rstrip('/')
 PORT = int(os.getenv('PORT', 10000))
+PROXY_URL = os.getenv('PROXY_URL') # Agar proxy ho toh env me daalein
 COOKIE_DATA = os.getenv('COOKIE_DATA')
-COOKIE_FILE = os.path.join(os.getcwd(), 'cookies.txt')
+COOKIE_FILE = 'cookies.txt'
 
-# Env se cookie file banana (Render newline fix ke sath)
+# Smart Cookie Fixer
 if COOKIE_DATA:
     cookie_text = COOKIE_DATA.replace('\\n', '\n').strip()
     if not cookie_text.startswith("# Netscape HTTP Cookie File"):
@@ -28,19 +29,16 @@ os.makedirs('downloads', exist_ok=True)
 
 # --- BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **THE GREAT MOVIES Downloader**\n\nBhai link bhejo, is baar pakka download hoga!", parse_mode='Markdown')
+    await update.message.reply_text("👋 **Welcome to THE GREAT MOVIES Bot!**\n\nNaye Smart Engine ke sath. Kripya apna YouTube link bhejein.", parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     if "youtube.com" in url or "youtu.be" in url:
         keyboard = [
-            [InlineKeyboardButton("🎬 Video (Best)", callback_data=f"vid_best|{url}")],
-            [InlineKeyboardButton("🎞️ 720p", callback_data=f"vid_720|{url}"),
-             InlineKeyboardButton("🎵 MP3 Audio", callback_data=f"aud_mp3|{url}")]
+            [InlineKeyboardButton("🎬 Download Best Video", callback_data=f"vid_best|{url}")],
+            [InlineKeyboardButton("🎵 Download MP3 Audio", callback_data=f"aud_mp3|{url}")]
         ]
-        await update.message.reply_text("📥 **Quality Select Karein:**", 
-                                       reply_markup=InlineKeyboardMarkup(keyboard), 
-                                       parse_mode='Markdown')
+        await update.message.reply_text("📥 **Aapko kya download karna hai?**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
         await update.message.reply_text("❌ Kripya valid YouTube link bhejein.")
 
@@ -49,38 +47,32 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data, url = query.data.split('|')
     
-    status_msg = await query.message.reply_text("⏳ **YouTube ki security bypass kar raha hu...**", parse_mode='Markdown')
+    status_msg = await query.message.reply_text("⏳ **Link ko analyze kiya ja raha hai...**", parse_mode='Markdown')
 
-    # ---> YAHAN HAI ASLI JADUI FIX <---
     ydl_opts = {
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         'outtmpl': 'downloads/%(title)s.%(ext)s',
-        'quiet': False, 
+        'quiet': False,
         'no_warnings': True,
-        # 1. Force IPv4 (Cloud IPv6 Block ko todne ke liye)
-        'source_address': '0.0.0.0',
-        # 2. Smart TV & Mobile Bypass
-        'extractor_args': {'youtube': {'player_client': ['tv', 'android', 'ios', 'web']}},
-        # 3. Fake User-Agent taaki bot na lage
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web']}},
     }
 
-    # Bulletproof Formats
-    if "vid_720" in data:
-        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
-    elif "vid_best" in data:
-        ydl_opts['format'] = 'bestvideo+bestaudio/best'
+    # Agar Render ka IP block bypass karna ho (via Proxy)
+    if PROXY_URL:
+        ydl_opts['proxy'] = PROXY_URL
+        logger.info("Using Proxy to bypass IP block!")
+
+    # Format strict but safe
+    if "vid_best" in data:
+        ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     else:
-        # Audio ke liye sabse best fallback
         ydl_opts.update({
-            'format': 'm4a/bestaudio/best', 
+            'format': 'bestaudio/best',
             'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
         })
 
     try:
-        await status_msg.edit_text("📥 **Downloading start ho gayi hai...**", parse_mode='Markdown')
+        await status_msg.edit_text("📥 **Downloading start ho chuki hai (Badi files me time lag sakta hai)...**", parse_mode='Markdown')
         
         def run_dl():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -88,58 +80,56 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         info = await asyncio.to_thread(run_dl)
         
-        if 'requested_downloads' in info:
-            file_path = info['requested_downloads'][0]['filepath']
-        else:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                file_path = ydl.prepare_filename(info)
-        
-        # Extension fix for audio
-        if "aud_mp3" in data and not file_path.endswith('.mp3'):
-            file_path = os.path.splitext(file_path)[0] + ".mp3"
+        # Filepath properly resolve karna
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            actual_file_path = ydl.prepare_filename(info)
+            if "aud_mp3" in data:
+                actual_file_path = os.path.splitext(actual_file_path)[0] + ".mp3"
 
-        if os.path.exists(file_path):
-            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if os.path.exists(actual_file_path):
+            file_size_mb = os.path.getsize(actual_file_path) / (1024 * 1024)
             if file_size_mb > 50:
-                await status_msg.edit_text(f"❌ **Error:** File ka size **{file_size_mb:.1f} MB** hai. Telegram Bots 50MB se badi file nahi bhej sakte.", parse_mode='Markdown')
-                os.remove(file_path)
+                await status_msg.edit_text(f"❌ **Error:** File ka size **{file_size_mb:.1f} MB** hai. Telegram ki limit 50MB hai.", parse_mode='Markdown')
+                os.remove(actual_file_path)
                 return
 
         await status_msg.edit_text("📤 **Telegram par upload ho raha hai...**", parse_mode='Markdown')
         
-        with open(file_path, 'rb') as f:
+        with open(actual_file_path, 'rb') as f:
             if "aud_mp3" in data:
                 await context.bot.send_audio(chat_id=query.message.chat_id, audio=f, caption=info.get('title'))
             else:
                 await context.bot.send_video(chat_id=query.message.chat_id, video=f, caption=info.get('title'), supports_streaming=True)
         
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        os.remove(actual_file_path)
         await status_msg.delete()
 
     except Exception as e:
         logger.error(f"Download Error: {e}")
-        await status_msg.edit_text(f"❌ **Error:** `{str(e)}`", parse_mode='Markdown')
+        error_str = str(e)
+        if "Requested format is not available" in error_str:
+            await status_msg.edit_text("❌ **YouTube IP Blocked!**\n\nRender ka IP block ho chuka hai. Kripya is bot ko apne phone (Termux) me run karein ya Env me `PROXY_URL` daalein.", parse_mode='Markdown')
+        else:
+            await status_msg.edit_text(f"❌ **Error:** `{error_str}`", parse_mode='Markdown')
 
-# --- MAIN RUNNER ---
+# --- SMART ENVIRONMENT DETECTOR ---
 def main():
-    if not TOKEN or not WEBHOOK_URL:
-        logger.error("BOT_TOKEN ya WEBHOOK_URL environment variable missing hai!")
+    if not TOKEN:
+        logger.error("BOT_TOKEN is missing!")
         return
 
     app = Application.builder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_click))
 
-    logger.info(f"Starting webhook on port {PORT}")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+    # Yahan magic hota hai: Render vs Termux Detection
+    if WEBHOOK_URL:
+        logger.info(f"Running in WEBHOOK mode on port {PORT} (Render/Cloud)")
+        app.run_webhook(listen="0.0.0.0", port=PORT, url_path=TOKEN, webhook_url=f"{WEBHOOK_URL}/{TOKEN}")
+    else:
+        logger.info("Running in POLLING mode (Termux/Local)")
+        app.run_polling()
 
 if __name__ == '__main__':
     main()
