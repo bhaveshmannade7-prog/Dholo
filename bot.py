@@ -16,10 +16,9 @@ PORT = int(os.getenv('PORT', 10000))
 COOKIE_DATA = os.getenv('COOKIE_DATA')
 COOKIE_FILE = 'cookies.txt'
 
-# Env se cookie file banana (Auto-Fix Header ke sath)
+# Env se cookie file banana
 if COOKIE_DATA:
     cookie_text = COOKIE_DATA.strip()
-    # Agar copy karne me Netscape header miss ho gaya ho, toh automatic add kar do
     if not cookie_text.startswith("# Netscape HTTP Cookie File"):
         cookie_text = "# Netscape HTTP Cookie File\n" + cookie_text
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
@@ -27,49 +26,50 @@ if COOKIE_DATA:
 
 # --- BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **THE GREAT MOVIES Downloader**\n\nYouTube link bhejein aur download shuru karein!", parse_mode='Markdown')
+    await update.message.reply_text("THE GREAT MOVIES Downloader chalu hai!\nLink bhejo download start karte hai.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     if "youtube.com" in url or "youtu.be" in url:
         keyboard = [
-            [InlineKeyboardButton("🎬 Video (Best)", callback_data=f"vid_best|{url}")],
-            [InlineKeyboardButton("🎞️ 720p (Agar available ho)", callback_data=f"vid_720|{url}"),
-             InlineKeyboardButton("🎵 MP3 Audio", callback_data=f"aud_mp3|{url}")]
+            [InlineKeyboardButton("Video (Best)", callback_data=f"vid_best|{url}")],
+            [InlineKeyboardButton("720p Video", callback_data=f"vid_720|{url}"),
+             InlineKeyboardButton("MP3 Audio", callback_data=f"aud_mp3|{url}")]
         ]
-        await update.message.reply_text("📥 **Quality Select Karein:**", 
-                                       reply_markup=InlineKeyboardMarkup(keyboard), 
-                                       parse_mode='Markdown')
+        await update.message.reply_text("Quality select karo bhai:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text("❌ Kripya valid YouTube link bhejein.")
+        await update.message.reply_text("Bhai koi valid YouTube link bhejo.")
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data, url = query.data.split('|')
     
-    status_msg = await query.message.reply_text("⏳ **Link process ho raha hai...**", parse_mode='Markdown')
+    status_msg = await query.message.reply_text("Process kar raha hu, thoda ruko...")
 
+    # YAHAN MAIN BYPASS ADD KIYA HAI
     ydl_opts = {
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         'outtmpl': 'downloads/%(title)s.%(ext)s',
-        'quiet': False, # Console me exact error dekhne ke liye isko temporarily False rakha hai
+        'quiet': False,
         'no_warnings': True,
+        # Ye YouTube ko lagega ki request Android phone se aa rahi hai
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
     }
 
-    # Format me '/b' (best single file) add kiya hai as ultimate fallback (Shorts ke liye zaruri)
+    # Format me '/best' sabme daal diya taaki agar exact format na mile to video fail na ho
     if "vid_720" in data:
-        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/b'
+        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
     elif "vid_best" in data:
-        ydl_opts['format'] = 'bestvideo+bestaudio/b'
+        ydl_opts['format'] = 'bestvideo+bestaudio/best'
     else:
         ydl_opts.update({
-            'format': 'bestaudio/b',
+            'format': 'bestaudio/best',
             'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
         })
 
     try:
-        await status_msg.edit_text("📥 **Downloading start ho gayi hai... (Thoda wait karein)**", parse_mode='Markdown')
+        await status_msg.edit_text("Downloading chalu ho gayi hai...")
         
         def run_dl():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -77,25 +77,22 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         info = await asyncio.to_thread(run_dl)
         
-        # Sahi filepath nikalna
         if 'requested_downloads' in info:
             file_path = info['requested_downloads'][0]['filepath']
         else:
-            # Agar format /b fallback use huva toh pre-merged file aati hai
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 file_path = ydl.prepare_filename(info)
         
         if "aud_mp3" in data and not file_path.endswith('.mp3'):
             file_path = os.path.splitext(file_path)[0] + ".mp3"
 
-        # Telegram ki 50MB limit check karna
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         if file_size_mb > 50:
-            await status_msg.edit_text(f"❌ **Error:** File ka size **{file_size_mb:.1f} MB** hai. Telegram Bots 50MB se badi file nahi bhej sakte. Kripya choti video ya audio try karein.", parse_mode='Markdown')
+            await status_msg.edit_text(f"File ka size {file_size_mb:.1f} MB hai. Telegram bot 50MB se bada file nahi bhej sakta.")
             os.remove(file_path)
             return
 
-        await status_msg.edit_text("📤 **Telegram par upload ho raha hai...**", parse_mode='Markdown')
+        await status_msg.edit_text("Telegram par upload kar raha hu...")
         
         with open(file_path, 'rb') as f:
             if "aud_mp3" in data:
@@ -109,16 +106,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Download Error: {e}")
-        error_msg = str(e)
-        if "Sign in to confirm you're not a bot" in error_msg:
-            await status_msg.edit_text("❌ **Error:** YouTube ne IP block kar diya hai ya Cookies Expire ho gaye hain. Nayi cookies daalkar try karein.", parse_mode='Markdown')
-        else:
-            await status_msg.edit_text(f"❌ **Error:** `{error_msg}`\n\nShayad is video ka format available nahi hai ya file private hai.", parse_mode='Markdown')
+        await status_msg.edit_text(f"Error aagya bhai: {str(e)}")
 
-# --- MAIN RUNNER ---
 def main():
     if not TOKEN or not WEBHOOK_URL:
-        logger.error("BOT_TOKEN ya WEBHOOK_URL environment variable missing hai!")
+        logger.error("Token ya URL missing hai!")
         return
 
     app = Application.builder().token(TOKEN).build()
@@ -127,7 +119,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_click))
 
-    logger.info(f"Starting webhook on port {PORT}")
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
