@@ -16,10 +16,14 @@ PORT = int(os.getenv('PORT', 10000))
 COOKIE_DATA = os.getenv('COOKIE_DATA')
 COOKIE_FILE = 'cookies.txt'
 
-# Env se cookie file banana
+# Env se cookie file banana (Auto-Fix Header ke sath)
 if COOKIE_DATA:
+    cookie_text = COOKIE_DATA.strip()
+    # Agar copy karne me Netscape header miss ho gaya ho, toh automatic add kar do
+    if not cookie_text.startswith("# Netscape HTTP Cookie File"):
+        cookie_text = "# Netscape HTTP Cookie File\n" + cookie_text
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
-        f.write(COOKIE_DATA)
+        f.write(cookie_text)
 
 # --- BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -49,18 +53,18 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ydl_opts = {
         'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         'outtmpl': 'downloads/%(title)s.%(ext)s',
-        'quiet': True,
+        'quiet': False, # Console me exact error dekhne ke liye isko temporarily False rakha hai
         'no_warnings': True,
     }
 
-    # Format me Fallback add kiya hai taaki error na aaye
+    # Format me '/b' (best single file) add kiya hai as ultimate fallback (Shorts ke liye zaruri)
     if "vid_720" in data:
-        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
+        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/b'
     elif "vid_best" in data:
-        ydl_opts['format'] = 'bestvideo+bestaudio/best'
+        ydl_opts['format'] = 'bestvideo+bestaudio/b'
     else:
         ydl_opts.update({
-            'format': 'bestaudio/best',
+            'format': 'bestaudio/b',
             'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
         })
 
@@ -77,7 +81,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 'requested_downloads' in info:
             file_path = info['requested_downloads'][0]['filepath']
         else:
-            # Agar pre-merged file aati hai toh ye path hoga
+            # Agar format /b fallback use huva toh pre-merged file aati hai
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 file_path = ydl.prepare_filename(info)
         
@@ -105,7 +109,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Download Error: {e}")
-        await status_msg.edit_text(f"❌ **Error:** `{str(e)}`\n\nShayad is video ka ye format available nahi hai ya file private hai.", parse_mode='Markdown')
+        error_msg = str(e)
+        if "Sign in to confirm you're not a bot" in error_msg:
+            await status_msg.edit_text("❌ **Error:** YouTube ne IP block kar diya hai ya Cookies Expire ho gaye hain. Nayi cookies daalkar try karein.", parse_mode='Markdown')
+        else:
+            await status_msg.edit_text(f"❌ **Error:** `{error_msg}`\n\nShayad is video ka format available nahi hai ya file private hai.", parse_mode='Markdown')
 
 # --- MAIN RUNNER ---
 def main():
